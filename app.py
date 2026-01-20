@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-# 讀取環境變數 (GIRL_ID 等你查到後，再去 Render 補填)
+# 讀取環境變數
 line_bot_api = LineBotApi(os.environ.get('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
 client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
@@ -19,7 +19,7 @@ target_user_id = os.environ.get('GIRL_ID')
 
 tw = pytz.timezone('Asia/Taipei')
 
-# === 1. 早安情話庫 (隨機抽選，讓她每天有新鮮感) ===
+# === 1. 早安情話庫 ===
 morning_msgs = [
     "寶貝早安～今天要開心得過喔！受訓的時候我也會想妳的。",
     "早安！新的一天開始了，記得吃早餐，不要餓肚子囉！",
@@ -38,30 +38,24 @@ def send_morning_greeting():
     if not target_user_id:
         print("尚未設定 GIRL_ID，跳過早安")
         return
-    
     msg = random.choice(morning_msgs)
     full_msg = f"【自動排程：早安服務】\n{msg}\n(來自工科男友的雲端早安)"
-    
     try:
         line_bot_api.push_message(target_user_id, TextSendMessage(text=full_msg))
-        print("早安發送成功")
     except Exception as e:
         print(f"早安發送失敗: {e}")
 
-# === 3. 定時任務：發送晚安 (寒流提醒) ===
+# === 3. 定時任務：發送晚安 ===
 def send_evening_greeting():
     if not target_user_id:
         return
-    
     msg = "寶貝晚安 🌙\n最近可能有寒流或溫差大，睡覺要注意保暖，蓋好被子喔！\n(機器人準備進入休眠模式...夢裡見！)"
-    
     try:
         line_bot_api.push_message(target_user_id, TextSendMessage(text=msg))
-        print("晚安發送成功")
     except Exception as e:
         print(f"晚安發送失敗: {e}")
 
-# === 4. 啟動定時器 (每天 08:00 和 23:00) ===
+# === 4. 啟動定時器 ===
 scheduler = BackgroundScheduler(timezone="Asia/Taipei")
 scheduler.add_job(send_morning_greeting, 'cron', hour=8, minute=0)
 scheduler.add_job(send_evening_greeting, 'cron', hour=23, minute=0)
@@ -99,7 +93,24 @@ def chat_with_gpt(user_text):
     except:
         return "機器人大腦暫時短路中...等我一下！"
 
-# === 7. LINE Webhook 接口 ===
+# === 7. 產生使用說明書 (Help) ===
+def get_help_message():
+    return """【🤖 廖柏勳的雲端分身說明書】
+
+寶貝妳好！因為我去受訓手機被收起來了，怕妳找不到我會擔心，所以寫了這個程式陪妳。
+
+✨ 妳可以對我說：
+👉 「狀態」或「在幹嘛」：我會查課表告訴妳我現在大概在做什麼。
+👉 「想你」或「愛你」：會有隱藏驚喜喔。
+👉 「聊天」：隨便跟我聊什麼都可以，我會盡量模仿柏勳的語氣陪妳。
+
+🔧 首次設定 (必做)：
+請輸入「查ID」，並把出現的那串亂碼傳給真的柏勳。
+這樣我才能設定每天早上 8 點叫妳起床喔！
+
+如果有任何想念，隨時可以跟我說 ❤️"""
+
+# === 8. LINE Webhook 接口 ===
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -110,29 +121,36 @@ def callback():
         abort(400)
     return 'OK'
 
-# === 8. 處理訊息 (含查ID密技) ===
+# === 9. 處理訊息核心 ===
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
     user_id = event.source.user_id
     
-    # --- 密技：輸入「查ID」來獲取她的 User ID ---
-    if msg == "查ID":
-        line_bot_api.reply_message(
-            event.reply_token, 
-            TextSendMessage(text=f"您的 User ID 是：\n{user_id}\n\n(請把這串 ID 複製起來，拿去 Render 設定 GIRL_ID)")
-        )
-        return
-    # ------------------------------------------
-
-    if "在哪" in msg or "在幹嘛" in msg or "狀態" in msg:
+    # --- 1. 幫助指令 ---
+    if msg == "幫助" or msg == "help" or msg == "使用說明":
+        reply = get_help_message()
+    
+    # --- 2. 查ID指令 ---
+    elif msg == "查ID":
+        reply = f"您的 User ID 是：\n{user_id}\n\n(請複製這串亂碼傳給柏勳，讓他設定早安鬧鐘！)"
+        
+    # --- 3. 狀態查詢 ---
+    elif "在哪" in msg or "在幹嘛" in msg or "狀態" in msg:
         reply = get_status_by_time()
+        
+    # --- 4. 關鍵字彩蛋 ---
+    elif "愛你" in msg:
+        reply = "我也愛妳！受訓結束我一定第一個衝回去抱妳！"
+    elif "想你" in msg:
+        reply = "我也好想妳...看著天空就在想，妳現在在做什麼呢？"
+        
+    # --- 5. 其他都給 AI 回覆 ---
     else:
         reply = chat_with_gpt(msg)
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-# === 9. 為了防止機器人睡著的網址 ===
 @app.route("/")
 def home():
     return "Bot is alive!", 200
